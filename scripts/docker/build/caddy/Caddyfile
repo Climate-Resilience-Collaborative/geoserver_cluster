@@ -1,0 +1,6 @@
+:8600 {
+  reverse_proxy gs-node1:8080 gs-node2:8080 {
+    lb_policy      ip_hash
+  }
+}
+

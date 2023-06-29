@@ -1,0 +1,272 @@
+version: "3.9"
+
+volumes:
+  geo-db-data:
+
+networks:
+  geocluster:
+
+services:
+  ### PostgreSQL
+  db:
+    image: kartoza/postgis:${POSTGIS_VERSION_TAG}
+    volumes:
+      - geo-db-data:/var/lib/postgresql
+      - ${BUILD_WEB_XML}:/settings/web.xml
+    environment:
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=gis
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASS=${POSTGRES_PASS}
+      - ALLOW_IP_RANGE=${ALLOW_IP_RANGE}
+      - FORCE_SSL=FALSE
+    ports:
+      - ${POSTGRES_PORT}:5432
+    restart: on-failure
+    healthcheck:
+      test: "PGPASSWORD=${POSTGRES_PASS} pg_isready -h 127.0.0.1 -U docker -d gis"
+    networks:
+      - geocluster
+    labels: 
+      org.label-schema.group: "database"
+
+  ### Active-MQ
+  geobroker:
+    image: kartoza/activemq-docker:2.20.6
+    build:
+      context: ./scripts/docker/build/activemq
+      dockerfile: Dockerfile
+    environment:
+      - JAVA_HOME=/opt/java/openjdk
+      - HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=gis
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASS=${POSTGRES_PASS}
+      - SSL_MODE=FALSE
+      - ACTIVEMQ_SERVER_URI=tcp://0.0.0.0:61616?maximumConnections=1000&wireFormat.maxFrameSize=104857600&jms.useAsyncSend=false&transport.daemon=true
+      - ACTIVEMQ_SERVER_DISCOVERYURI=multicast://default
+    restart: on-failure
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - 8161:8161
+      - 61616:61616
+    healthcheck:
+      test: netstat -ltn | grep -c ":61616"
+      interval: 60s
+      timeout: 15s
+      retries: 10
+    networks:
+      - geocluster
+    labels: 
+      org.label-schema.group: "broker"
+
+  ### Geoserver-1
+  gs-node1:
+    image: geobeyond/geoserver:2.20.6
+    volumes:
+      - ${GEOSERVER_DATA_MNT}:${GEOSERVER_DATA_DIR}
+      - ${GEOSERVER_CACHE_MNT}:${GEOSERVER_CACHE_DIR}
+    ports:
+      - "8081:8080"
+    environment:
+      - GEOSERVER_DATA_DIR=${GEOSERVER_DATA_DIR} 
+      - GEOWEBCACHE_CACHE_DIR=${GEOSERVER_CACHE_DIR}
+      - RECREATE_DATADIR=FALSE
+      - BROKER_URL=tcp://0.0.0.0:61616
+      - GEOSERVER_ADMIN_PASSWORD=${GEOSERVER_ADMIN_PASSWORD}
+      - GEOSERVER_ADMIN_USER=${GEOSERVER_ADMIN_USER}
+      - READONLY=disabled
+      - CLUSTER_DURABILITY=false
+      - CLUSTERING=True
+      - TOGGLE_MASTER=true
+      - TOGGLE_SLAVE=true
+      - EMBEDDED_BROKER=disabled
+      - CLUSTER_CONNECTION_RETRY_COUNT=10
+      - CLUSTER_CONNECTION_MAX_WAIT=500
+      - DB_BACKEND=POSTGRES
+      - HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=gis
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASS=${POSTGRES_PASS}
+      - SSL_MODE=allow
+      - RANDOMSTRING=23bd87cfa327d47e-node1
+      - INSTANCE_STRING=ac3bcba2fa7d989678a01ef4facc4173010cd8b40d2e5f5a8d18d5f863ca976f-node1
+      - SAMPLE_DATA=false
+    restart: on-failure
+    depends_on:
+      db:
+        condition: service_healthy
+      geobroker:
+        condition: service_healthy
+    healthcheck:
+      test: curl --fail -s http://localhost:8080/geoserver/web || exit 1
+      interval: 1m30s
+      timeout: 10s
+      retries: 3
+      start_period: 100s
+    networks:
+      - geocluster
+    labels: 
+      org.label-schema.group: "geoserver"
+
+  ### Geoserver-2
+  gs-node2:
+    image: geobeyond/geoserver:2.20.6
+    volumes:
+      - ${GEOSERVER_DATA_MNT}:${GEOSERVER_DATA_DIR}
+      - ${GEOSERVER_CACHE_MNT}:${GEOSERVER_CACHE_DIR}
+    ports:
+      - "8082:8080"
+    environment:
+      - GEOSERVER_DATA_DIR=${GEOSERVER_DATA_DIR} 
+      - GEOWEBCACHE_CACHE_DIR=${GEOSERVER_CACHE_DIR}
+      - RECREATE_DATADIR=FALSE
+      - BROKER_URL=tcp://0.0.0.0:61616
+      - GEOSERVER_ADMIN_PASSWORD=${GEOSERVER_ADMIN_PASSWORD}
+      - GEOSERVER_ADMIN_USER=${GEOSERVER_ADMIN_USER}
+      - READONLY=disabled
+      - CLUSTER_DURABILITY=false
+      - CLUSTERING=True
+      - TOGGLE_MASTER=true
+      - TOGGLE_SLAVE=true
+      - EMBEDDED_BROKER=disabled
+      - CLUSTER_CONNECTION_RETRY_COUNT=10
+      - CLUSTER_CONNECTION_MAX_WAIT=500
+      - DB_BACKEND=POSTGRES
+      - HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=gis
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASS=${POSTGRES_PASS}
+      - SSL_MODE=allow
+      - RANDOMSTRING=23bd87cfa327d47e-node2
+      - INSTANCE_STRING=ac3bcba2fa7d989678a01ef4facc4173010cd8b40d2e5f5a8d18d5f863ca976f-node2
+      - SAMPLE_DATA=false
+    restart: on-failure
+    depends_on:
+      db:
+        condition: service_healthy
+      geobroker:
+        condition: service_healthy
+    healthcheck:
+      test: curl --fail -s http://localhost:8080/geoserver/web || exit 1
+      interval: 1m30s
+      timeout: 10s
+      retries: 3
+      start_period: 100s
+    networks:
+      - geocluster
+    labels:
+      org.label-schema.group: "geoserver"
+
+  ### Load balancer
+  caddy:
+    image: caddy:latest
+    volumes:
+      - ./scripts/docker/build/caddy/Caddyfile:/etc/caddy/Caddyfile
+    ports:
+      - 8600:8600
+    healthcheck:
+      test: curl --fail -s http://localhost || exit 1
+      interval: 1m
+      retries: 5
+      start_period: 20s
+      timeout: 10s
+    depends_on:
+      gs-node1:
+        condition: service_healthy
+      gs-node2:
+        condition: service_healthy
+      geobroker:
+        condition: service_healthy
+    networks:
+      - geocluster
+    labels:
+      org.label-schema.group: "reverse-proxy"
+
+  ### Metric
+  prometheus:
+    image: prom/prometheus
+    container_name: prometheus
+    user: root
+    volumes: 
+      - ./scripts/docker/build/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - 9090:9090
+    # https://rokpoto.com/adding-health-check-to-prometheus/
+    healthcheck:
+      test: ["CMD", "wget", "http://localhost:9090"]
+      interval: 10s
+      timeout: 15s
+      retries: 10
+      start_period: 40s
+    networks:
+      - geocluster
+    labels: 
+      org.label-schema.group: "monitoring"
+
+  ### Web Based UI Visualization of Metrics
+  grafana:
+    image: grafana/grafana:9.4.3
+    container_name: grafana
+    ports:
+      - 3000:3000
+    user: root
+    restart: unless-stopped
+    volumes:
+      - /mnt/data/grafana:/var/lib/grafana
+    networks:
+      - geocluster
+    labels:
+      org.label-schema.group: "monitoring"
+
+  ### Host Linux Machine Metrics exporter for prometheus
+  ### GUIDE: https://github.com/DoTheEvo/selfhosted-apps-docker/blob/master/prometheus_grafana_loki/
+  nodeexporter:
+    image: prom/node-exporter:v1.5.0
+    container_name: nodeexporter
+    hostname: nodeexporter
+    restart: unless-stopped
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    expose:
+      - "9100"
+    networks:
+      - geocluster
+    labels:
+      org.label-schema.group: "monitoring"
+  
+  ### Docker container exporter for prometheus
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    hostname: cadvisor
+    expose:
+      - "8080"
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /csgroup:/csgroup:ro
+    networks:
+      - geocluster
+    labels:
+      org.label-schema.group: "monitoring"
+    depends_on: 
+      - caddy
