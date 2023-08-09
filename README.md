@@ -6,6 +6,7 @@ This repository provides a scalable and resilient Geoserver cluster setup, along
 ## Requirements
 * Docker + Docker Compose
 * 4 GB RAM
+* Additional RAM to allocate more RAM per instance or create more instances
 
 ## Technology
 * Docker
